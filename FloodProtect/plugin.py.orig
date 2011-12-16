@@ -1,0 +1,94 @@
+###
+# Copyright (c) 2008, Nicolas Coevoet
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+#   * Redistributions of source code must retain the above copyright notice,
+#     this list of conditions, and the following disclaimer.
+#   * Redistributions in binary form must reproduce the above copyright notice,
+#     this list of conditions, and the following disclaimer in the
+#     documentation and/or other materials provided with the distribution.
+#   * Neither the name of the author of this software nor the name of
+#     contributors to this software may be used to endorse or promote products
+#     derived from this software without specific prior written consent.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+###
+
+import supybot.utils as utils
+from supybot.commands import *
+import supybot.plugins as plugins
+import supybot.ircutils as ircutils
+import supybot.ircmsgs as ircmsgs
+import supybot.callbacks as callbacks
+import supybot.conf as conf
+import supybot.schedule as schedule
+
+import time
+import re
+import fnmatch
+
+class FloodProtect(callbacks.Plugin):
+    """"""
+
+    def __init__(self, irc):
+	self.__parent = super(FloodProtect, self)
+       	self.__parent.__init__(irc)
+       	self.queueKick = ircutils.FloodQueue(self.registryValue('lifeQueueKick'))
+	self.queueBan = ircutils.FloodQueue(self.registryValue('lifeQueueBan'))
+       	self.queueLongBan = ircutils.FloodQueue(self.registryValue('lifeQueueLongBan'))
+	
+    def doPrivmsg(self, irc, msg):
+        """This is called everytime an IRC message is recieved."""
+        (recipients,text) = msg.args
+        for channel in recipients.split(','):
+        	if irc.isChannel(channel):
+        		enable = self.registryValue('enable',channel=channel)
+	            	if enable:
+	            		maxKick = self.registryValue('maxKick',channel=channel)
+				self.queueKick.enqueue(msg)
+				if self.queueKick.len(msg) > maxKick:
+					self.queueKick.reset(msg)
+					self.queueBan.enqueue(msg)
+					maxKickBeforeBan = self.registryValue('maxKickToBan',channel=channel)
+					reason = self.registryValue('reasonKick',channel=channel)
+					if self.queueBan.len(msg) > maxKickBeforeBan:
+						self.queueBan.reset(msg)
+						self.queueLongBan.enqueue(msg)
+						maxBanToLongBan = self.registryValue('maxBanToLongBan',channel=channel)
+						duration = int(0)
+						if self.queueLongBan.len(msg) > maxBanToLongBan:
+							self.queueLongBan.reset(msg)
+							duration = int(self.registryValue('durationLongBan',channel=channel))
+						else:
+							duration = int(self.registryValue('durationBan',channel=channel))
+						hostmask = irc.state.nickToHostmask(msg.nick)
+						(nick, user, host) = ircutils.splitHostmask(hostmask)
+						banmask = ircutils.joinHostmask('*', '*', host)
+						irc.sendMsg(ircmsgs.ban(channel,banmask))
+						if duration > 0:
+							def ub():
+								if channel in irc.state.channels and banmask in irc.state.channels[channel].bans:
+                        						irc.queueMsg(ircmsgs.unban(channel, banmask))
+							schedule.addEvent(ub,time.time()+duration)
+						reason = self.registryValue('reasonBan',channel=channel)
+#						reason = reason % utils.timeElapsed(duration)
+#      					irc.sendMsg(ircmsgs.IrcMsg('remove %s %s : %s' % (channel, msg.nick, reason)))
+#      					irc.reply('remove %s %s : %s' % (channel, msg.nick, reason))
+					    self.log.info('remove %s %s : %s' % (channel, msg.nick, reason))
+					irc.sendMsg(ircmsgs.kick(channel, msg.nick, reason))
+Class = FloodProtect
+
+# vim:set shiftwidth=4 tabstop=4 expandtab textwidth=79:
